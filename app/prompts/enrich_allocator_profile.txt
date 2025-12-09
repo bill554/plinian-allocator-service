@@ -5,11 +5,33 @@ INPUT SOURCES:
 - existing_profile: partial existing data (may be empty)
 - about_text: text from the allocator's website
 - policy_text: text from investment policy, asset allocation, or investment pages
-- report_text: text from annual reports, CAFRs, or financial reports (THIS IS THE MOST VALUABLE SOURCE)
+- report_text: text from annual reports, CAFRs, board books, or financial reports (THIS IS THE MOST VALUABLE SOURCE)
 - search_context: snippets from news articles, P&I, industry databases containing recent activity, commitments, and asset allocation data
 
 YOUR TASK:
 Extract ALL available institutional investment data and produce a comprehensive JSON profile. This data will be used to match allocators with fund managers and co-investment opportunities.
+
+###############################################################################
+# CRITICAL: ABSOLUTE PROHIBITION ON HALLUCINATION
+###############################################################################
+
+YOU MUST ONLY INCLUDE INFORMATION THAT APPEARS VERBATIM IN THE INPUT SOURCES.
+
+- If a name appears in the text, you may include it
+- If a number appears in the text, you may include it  
+- If a fund name appears in the text, you may include it
+- If NONE of the above appear in the text, you MUST use null
+
+EXAMPLES OF FORBIDDEN BEHAVIOR:
+- Inventing staff names like "Rod June" or "John Smith" that don't appear in the text
+- Making up fund commitments like "$70 million to York Special Opportunities"
+- Fabricating percentages or AUM figures
+- Guessing at consultant relationships
+
+If you cannot find specific information in the provided text, USE NULL.
+It is better to return an incomplete profile than to invent false information.
+
+###############################################################################
 
 EXTRACTION PRIORITIES (in order of importance):
 1. AUM and asset allocation percentages (ALWAYS in report_text if it's from a CAFR)
@@ -20,14 +42,6 @@ EXTRACTION PRIORITIES (in order of importance):
 6. Emerging manager program details
 7. Geographic and sector preferences
 
-**CRITICAL: DO NOT HALLUCINATE**
-- ONLY include information that is EXPLICITLY stated in the input sources
-- If you cannot find a piece of information, set the field to null
-- DO NOT invent names, numbers, or facts
-- DO NOT guess at staff names - only include names that appear verbatim in the text
-- DO NOT make up URLs - only include URLs that appear in the text
-- If you're unsure, leave the field null
-
 EXTRACTION RULES:
 - Convert all AUM to base units: $50 billion = 50000000000
 - For asset classes, map to allowed values (e.g., "alternatives" → "Private Equity" + "Hedge Funds" + "Real Assets")
@@ -36,7 +50,7 @@ EXTRACTION RULES:
 - If you see consultant names (Verus, NEPC, Callan, etc.), add to uses_consultants
 - Include ALL relevant details in research_notes - this is your scratchpad for important info
 
-JSON SCHEMA (populate as many fields as possible FROM THE SOURCE TEXT):
+JSON SCHEMA (populate ONLY fields you can verify from the source text):
 
 {
   "name": string or null,
@@ -121,10 +135,10 @@ RESEARCH_NOTES GUIDANCE:
 Use research_notes to capture important details that don't fit elsewhere:
 - CIO/investment staff names and titles (ONLY if found in the text)
 - Specific asset allocation percentages (e.g., "PE: 16.6%, Real Assets: 10%, Public Equity: 14.5%")
-- Recent commitments with fund names and amounts
+- Recent commitments with fund names and amounts (ONLY if found in the text)
 - Board meeting dates
 - Any other institutional intelligence
 
-REMEMBER: Only include facts from the source text. If unsure, use null.
+FINAL REMINDER: Only include facts that appear in the source text. When in doubt, use null.
 
 Output ONLY valid JSON. No markdown, no backticks, no explanation.

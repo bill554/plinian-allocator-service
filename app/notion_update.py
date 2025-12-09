@@ -2,6 +2,7 @@ from notion_client import Client
 from .config import SETTINGS
 from .mapping_config import ALLOCATOR_FIELD_CONFIG
 from .notion_mapping import build_notion_property
+from datetime import datetime, timezone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,10 @@ def update_allocator_from_llm(page_id: str, enriched: dict):
             properties[notion_name] = prop
             logger.info(f"Mapping {key} -> {notion_name}: {value}")
 
+    # ALWAYS set Last Research Run to now
+    now_iso = datetime.now(timezone.utc).isoformat()
+    properties["Last Research Run"] = {"date": {"start": now_iso}}
+    
     logger.info(f"Updating Notion page {page_id} with {len(properties)} properties: {list(properties.keys())}")
     
     if properties:
