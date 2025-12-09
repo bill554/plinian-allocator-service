@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-notion-client
+notion-client==2.2.1
 openai>=1.30.0
 httpx
 beautifulsoup4
