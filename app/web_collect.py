@@ -20,8 +20,8 @@ from pypdf import PdfReader
 
 
 DEFAULT_TIMEOUT = 12  # seconds
-MAX_TEXT_CHARS = 6000  # per bucket, to avoid LLM token explosion
-MAX_URLS_PER_BUCKET = 8  # rate limiting
+MAX_TEXT_CHARS = 12000  # per bucket - increased for more comprehensive data
+MAX_URLS_PER_BUCKET = 10  # rate limiting - increased slightly
 
 
 # ----- 1. Helper: safe HTTP fetch ----- #

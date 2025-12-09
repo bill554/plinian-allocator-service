@@ -92,7 +92,7 @@ def find_investment_pages(allocator_name: str, domain: str = None) -> dict:
         snippet = r.get("snippet", "")
         
         # Collect relevant snippets for LLM context
-        if any(kw in snippet.lower() for kw in ["billion", "million", "asset", "allocation", "portfolio", "aum", "cio", "investment"]):
+        if any(kw in snippet.lower() for kw in ["billion", "million", "asset", "allocation", "portfolio", "aum", "cio", "investment", "committed", "private equity", "real estate", "hedge", "consultant"]):
             result["search_snippets"].append(snippet)
         
         # Categorize URL by type
@@ -119,7 +119,7 @@ def find_investment_pages(allocator_name: str, domain: str = None) -> dict:
                 result["team_url"] = r.get("link")
     
     # Limit snippets
-    result["search_snippets"] = result["search_snippets"][:5]
+    result["search_snippets"] = result["search_snippets"][:10]
     
     logger.info(f"Found URLs for {allocator_name}: investments={result['investments_url']}, report={result['annual_report_url']}")
     
@@ -133,16 +133,35 @@ def enrich_allocator_with_search(allocator_name: str, domain: str = None) -> dic
     """
     pages = find_investment_pages(allocator_name, domain)
     
-    # Also do a general search for AUM/size info
-    general_results = search_google(f'"{allocator_name}" AUM assets under management billion', num_results=5)
+    # Do additional targeted searches for institutional data
+    additional_queries = [
+        f'"{allocator_name}" private equity commitment million',
+        f'"{allocator_name}" real estate real assets allocation',
+        f'"{allocator_name}" consultant Verus NEPC Callan Mercer',
+        f'"{allocator_name}" CIO chief investment officer',
+        f'"{allocator_name}" co-investment coinvest',
+        f'site:pionline.com "{allocator_name}"',  # P&I has great pension data
+        f'site:top1000funds.com "{allocator_name}"',  # Top1000 funds profiles
+    ]
     
-    for r in general_results:
-        snippet = r.get("snippet", "")
-        if any(kw in snippet.lower() for kw in ["billion", "million", "aum", "assets under management"]):
-            if snippet not in pages["search_snippets"]:
-                pages["search_snippets"].append(snippet)
+    for query in additional_queries:
+        results = search_google(query, num_results=5)
+        for r in results:
+            snippet = r.get("snippet", "")
+            if snippet and len(snippet) > 50:
+                # Check for high-value content
+                if any(kw in snippet.lower() for kw in [
+                    "billion", "million", "committed", "allocated", "allocation",
+                    "private equity", "real estate", "real assets", "hedge fund",
+                    "cio", "chief investment", "consultant", "verus", "nepc", "callan",
+                    "co-invest", "coinvest", "direct investment"
+                ]):
+                    if snippet not in pages["search_snippets"]:
+                        pages["search_snippets"].append(snippet)
     
-    # Limit total snippets
-    pages["search_snippets"] = pages["search_snippets"][:8]
+    # Keep more snippets - they contain the best data
+    pages["search_snippets"] = pages["search_snippets"][:20]
+    
+    logger.info(f"Total search snippets for {allocator_name}: {len(pages['search_snippets'])}")
     
     return pages
