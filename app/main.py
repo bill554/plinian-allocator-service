@@ -131,3 +131,84 @@ async def test_scrape(url: str = "https://investments.yale.edu"):
         "report_text_length": len(result.get("report_text", "")),
         "about_preview": result.get("about_text", "")[:500],
     }
+
+
+@app.get("/debug-enrich")
+async def debug_enrich(name: str, domain: str = None):
+    """
+    Debug endpoint: Run full enrichment pipeline and return all intermediate data.
+    Does NOT write to Notion - just shows what would be extracted.
+    
+    Usage: /debug-enrich?name=Indiana%20Public%20Retirement%20System&domain=in.gov/inprs
+    """
+    from .web_search import enrich_allocator_with_search
+    from .web_collect import collect_web_text
+    from .llm_jobs import call_enrich_allocator_profile
+    
+    result = {
+        "allocator_name": name,
+        "domain": domain,
+        "search_results": None,
+        "scraped_text_lengths": None,
+        "search_snippets": None,
+        "llm_output": None,
+        "errors": []
+    }
+    
+    try:
+        # Step 1: Web search
+        search_results = enrich_allocator_with_search(name, domain)
+        result["search_results"] = {
+            "investments_url": search_results.get("investments_url"),
+            "annual_report_url": search_results.get("annual_report_url"),
+            "about_url": search_results.get("about_url"),
+            "team_url": search_results.get("team_url"),
+        }
+        result["search_snippets"] = search_results.get("search_snippets", [])
+    except Exception as e:
+        result["errors"].append(f"Search error: {e}")
+        search_results = {}
+    
+    try:
+        # Step 2: Web scraping with discovered URLs
+        fake_page = {
+            "properties": {
+                "Main Website": {"type": "url", "url": f"https://{domain}" if domain else None}
+            }
+        }
+        texts = collect_web_text(fake_page, discovered_urls=search_results)
+        
+        # Add search snippets
+        if search_results.get("search_snippets"):
+            texts["search_context"] = "\n\n".join(search_results["search_snippets"])
+        
+        result["scraped_text_lengths"] = {
+            "about_text": len(texts.get("about_text", "")),
+            "policy_text": len(texts.get("policy_text", "")),
+            "report_text": len(texts.get("report_text", "")),
+            "search_context": len(texts.get("search_context", "")),
+        }
+        result["text_previews"] = {
+            "about": texts.get("about_text", "")[:500],
+            "policy": texts.get("policy_text", "")[:500],
+            "report": texts.get("report_text", "")[:500],
+            "search": texts.get("search_context", "")[:1000],
+        }
+    except Exception as e:
+        result["errors"].append(f"Scrape error: {e}")
+        texts = {}
+    
+    try:
+        # Step 3: LLM enrichment
+        if texts:
+            llm_output = call_enrich_allocator_profile(name, {}, texts)
+            result["llm_output"] = llm_output
+            
+            # Count non-null fields
+            non_null = {k: v for k, v in llm_output.items() if v is not None and v != [] and v != ""}
+            result["llm_fields_populated"] = len(non_null)
+            result["llm_populated_fields"] = list(non_null.keys())
+    except Exception as e:
+        result["errors"].append(f"LLM error: {e}")
+    
+    return result
