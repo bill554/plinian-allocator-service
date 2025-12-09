@@ -16,7 +16,8 @@ def call_enrich_allocator_profile(allocator_name, existing_profile, texts):
         "existing_profile": existing_profile,
         "about_text": texts.get("about_text", ""),
         "policy_text": texts.get("policy_text", ""),
-        "report_text": texts.get("report_text", "")
+        "report_text": texts.get("report_text", ""),
+        "search_context": texts.get("search_context", "")
     })
 
     resp = client.chat.completions.create(

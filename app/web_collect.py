@@ -289,12 +289,14 @@ def trim_text(text: str, limit: int = MAX_TEXT_CHARS) -> str:
 
 # ----- 6. Main entry: collect_web_text ----- #
 
-def collect_web_text(allocator_page: dict) -> dict:
+def collect_web_text(allocator_page: dict, discovered_urls: dict = None) -> dict:
     """
     Given a Notion allocator page, fetch and aggregate text from relevant URLs.
     
     Args:
         allocator_page: Notion page object with allocator properties
+        discovered_urls: Optional dict from web search with discovered URLs:
+            {investments_url, annual_report_url, about_url, team_url}
         
     Returns:
         {
@@ -305,6 +307,7 @@ def collect_web_text(allocator_page: dict) -> dict:
     """
     props = allocator_page.get("properties", {})
     base_url = get_base_url_from_notion_page(allocator_page)
+    discovered_urls = discovered_urls or {}
 
     # Pre-existing URLs from Notion (if specified)
     investments_page_prop = props.get("Investments Page URL", {})
@@ -317,11 +320,27 @@ def collect_web_text(allocator_page: dict) -> dict:
     policy_urls = []
     report_urls = []
 
-    # Root page as a general "about" source
+    # Priority 1: Explicit Notion-specified URLs
+    if investments_page:
+        policy_urls.append(investments_page)
+    if latest_report_url:
+        report_urls.append(latest_report_url)
+    
+    # Priority 2: Search-discovered URLs
+    if discovered_urls.get("investments_url"):
+        policy_urls.append(discovered_urls["investments_url"])
+    if discovered_urls.get("annual_report_url"):
+        report_urls.append(discovered_urls["annual_report_url"])
+    if discovered_urls.get("about_url"):
+        about_urls.append(discovered_urls["about_url"])
+    if discovered_urls.get("team_url"):
+        about_urls.append(discovered_urls["team_url"])
+
+    # Priority 3: Root page as a general "about" source
     if base_url:
         about_urls.append(base_url)
 
-    # Path-based URLs
+    # Priority 4: Path-based URL guessing
     for p in ABOUT_PATHS:
         about_urls.append(normalize_url(base_url, p))
 
@@ -333,12 +352,6 @@ def collect_web_text(allocator_page: dict) -> dict:
 
     for p in REPORT_PATHS:
         report_urls.append(normalize_url(base_url, p))
-
-    # Add explicit Notion-specified URLs if present
-    if investments_page:
-        policy_urls.insert(0, investments_page)  # Prioritize explicit URLs
-    if latest_report_url:
-        report_urls.insert(0, latest_report_url)
 
     # Deduplicate
     about_urls = unique_urls(about_urls)
