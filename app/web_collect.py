@@ -778,20 +778,56 @@ def collect_web_text(allocator_page: dict, discovered_urls: dict = None) -> dict
                 pdf_urls.append(pdf_url)
 
     # Now fetch the most relevant PDFs
-    # Sort PDFs by relevance (annual reports first)
+    # Sort PDFs by relevance (prefer recent annual reports and board books)
     def pdf_priority(url):
         url_lower = url.lower()
-        if "annual" in url_lower and "report" in url_lower:
-            return 0
-        if "cafr" in url_lower or "acfr" in url_lower:
-            return 1
+        score = 100  # Base score (lower is better)
+        
+        # Prefer recent years (FY24, FY25, 2024, 2025)
+        if "fy25" in url_lower or "fy24" in url_lower or "2025" in url_lower or "2024" in url_lower:
+            score -= 50
+        elif "fy23" in url_lower or "2023" in url_lower:
+            score -= 40
+        elif "fy22" in url_lower or "2022" in url_lower:
+            score -= 30
+        
+        # Board books are VERY valuable - current commitments, manager changes
+        if "board" in url_lower and "book" in url_lower:
+            score -= 40
+        elif "board" in url_lower:
+            score -= 25
+        
+        # Prefer full annual report books over sections
+        if "annualreportbook" in url_lower.replace("-", "").replace("_", ""):
+            score -= 30
+        elif "annual" in url_lower and "report" in url_lower:
+            score -= 20
+        
+        # Prefer investment sections
         if "investment" in url_lower:
-            return 2
-        if "report" in url_lower:
-            return 3
-        return 4
+            score -= 15
+        
+        # CAFR/ACFR are good
+        if "cafr" in url_lower or "acfr" in url_lower:
+            score -= 10
+        
+        # Penalize partial sections (introductory, financial only)
+        if "introductory" in url_lower or "intro" in url_lower:
+            score += 20
+        if "financialsection" in url_lower.replace("-", "").replace("_", ""):
+            score += 10
+        
+        # Penalize old years
+        if "fy20" in url_lower or "fy19" in url_lower or "fy18" in url_lower:
+            score += 30
+        if "2020" in url_lower or "2019" in url_lower or "2018" in url_lower:
+            score += 30
+            
+        return score
     
     pdf_urls = sorted(unique_urls(pdf_urls), key=pdf_priority)
+    
+    logger.info(f"PDF URLs sorted by priority: {pdf_urls[:5]}")
     
     # Fetch up to 3 PDFs (they can be large)
     # PDF content is HIGH VALUE - put it at the FRONT of report_texts
