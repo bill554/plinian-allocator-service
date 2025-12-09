@@ -32,7 +32,8 @@ from pypdf import PdfReader
 
 
 DEFAULT_TIMEOUT = 20  # increased for large PDFs
-MAX_TEXT_CHARS = 25000  # per bucket - increased significantly for PDFs
+MAX_TEXT_CHARS = 25000  # per bucket for about/policy
+MAX_REPORT_TEXT_CHARS = 50000  # larger limit for report_text (PDF content)
 MAX_URLS_PER_BUCKET = 10
 MAX_PDF_SIZE_MB = 50  # skip PDFs larger than this
 
@@ -793,18 +794,23 @@ def collect_web_text(allocator_page: dict, discovered_urls: dict = None) -> dict
     pdf_urls = sorted(unique_urls(pdf_urls), key=pdf_priority)
     
     # Fetch up to 3 PDFs (they can be large)
+    # PDF content is HIGH VALUE - put it at the FRONT of report_texts
+    pdf_texts = []
     logger.info(f"Found {len(pdf_urls)} PDF URLs, fetching top 3")
     for pdf_url in pdf_urls[:3]:
         logger.info(f"Fetching PDF: {pdf_url}")
         txt = extract_text(pdf_url)
         if txt:
-            # PDF content goes to report_texts (highest value)
-            report_texts.append(txt)
+            pdf_texts.append(txt)
+            logger.info(f"Extracted {len(txt)} chars from PDF")
+
+    # PDF content goes FIRST (highest value), then HTML report pages
+    all_report_texts = pdf_texts + report_texts
 
     return {
-        "about_text": trim_text(" ".join(about_texts)),
-        "policy_text": trim_text(" ".join(policy_texts)),
-        "report_text": trim_text(" ".join(report_texts))
+        "about_text": trim_text(" ".join(about_texts), MAX_TEXT_CHARS),
+        "policy_text": trim_text(" ".join(policy_texts), MAX_TEXT_CHARS),
+        "report_text": trim_text(" ".join(all_report_texts), MAX_REPORT_TEXT_CHARS)
     }
 
 
