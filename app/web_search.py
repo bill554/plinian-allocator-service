@@ -88,20 +88,42 @@ def find_investment_pages(allocator_name: str, domain: str = None) -> dict:
             seen_urls.add(url)
             unique_results.append(r)
     
+    # Build a normalized allocator name for matching
+    allocator_name_lower = allocator_name.lower()
+    # Create variations for matching (e.g., "ZOMA Capital" -> ["zoma", "zomacapital"])
+    allocator_words = [w.lower() for w in allocator_name.split() if len(w) > 2]
+    allocator_compressed = allocator_name_lower.replace(" ", "").replace("-", "").replace("_", "")
+    
     # Categorize results
     for r in unique_results:
         url = r.get("link", "")
         url_lower = url.lower()
         title = r.get("title", "").lower()
         snippet = r.get("snippet", "")
+        snippet_lower = snippet.lower()
         
-        # Check if it's a PDF - add to pdf_urls
+        # Check if it's a PDF
         if url_lower.endswith(".pdf"):
-            result["pdf_urls"].append(url)
-            logger.info(f"Found PDF URL: {url}")
+            # ONLY include PDFs that appear to be about this specific allocator
+            # Check URL, title, and snippet for allocator name
+            url_compressed = url_lower.replace("-", "").replace("_", "").replace("%20", "")
+            
+            pdf_is_relevant = (
+                allocator_compressed in url_compressed or
+                allocator_name_lower in title or
+                allocator_name_lower in snippet_lower or
+                (domain and domain.lower().split('.')[0] in url_lower) or
+                any(word in url_lower for word in allocator_words if len(word) > 4)
+            )
+            
+            if pdf_is_relevant:
+                result["pdf_urls"].append(url)
+                logger.info(f"Found relevant PDF URL: {url}")
+            else:
+                logger.info(f"Skipping unrelated PDF: {url}")
         
         # Collect relevant snippets for LLM context
-        if any(kw in snippet.lower() for kw in ["billion", "million", "asset", "allocation", "portfolio", "aum", "cio", "investment", "committed", "private equity", "real estate", "hedge", "consultant"]):
+        if any(kw in snippet_lower for kw in ["billion", "million", "asset", "allocation", "portfolio", "aum", "cio", "investment", "committed", "private equity", "real estate", "hedge", "consultant"]):
             result["search_snippets"].append(snippet)
         
         # Categorize URL by type (non-PDFs)

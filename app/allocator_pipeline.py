@@ -8,17 +8,43 @@ from .web_collect import collect_web_text
 from .web_search import enrich_allocator_with_search
 from .clay_client import enrich_with_clay
 import logging
+import httpx
 
 logger = logging.getLogger(__name__)
 
 
+def resolve_final_domain(url: str) -> str:
+    """Follow redirects and return the final domain."""
+    if not url:
+        return None
+    
+    try:
+        # Follow redirects to get final URL
+        with httpx.Client(follow_redirects=True, timeout=10) as client:
+            resp = client.head(url)
+            final_url = str(resp.url)
+            from urllib.parse import urlparse
+            parsed = urlparse(final_url)
+            domain = parsed.netloc.replace("www.", "")
+            logger.info(f"Resolved {url} -> {final_url} (domain: {domain})")
+            return domain
+    except Exception as e:
+        logger.warning(f"Could not resolve {url}: {e}")
+        return None
+
+
 def extract_domain(page) -> str:
-    """Extract domain from page properties."""
+    """Extract domain from page properties, resolving redirects."""
     props = page.get("properties", {})
     
     # Try Main Website first
     website = props.get("Main Website", {}).get("url")
     if website:
+        # Try to resolve redirects
+        resolved = resolve_final_domain(website)
+        if resolved:
+            return resolved
+        # Fallback to just parsing the URL
         from urllib.parse import urlparse
         parsed = urlparse(website)
         return parsed.netloc.replace("www.", "")
@@ -26,7 +52,13 @@ def extract_domain(page) -> str:
     # Try Domain field
     domain_prop = props.get("Domain", {}).get("rich_text", [])
     if domain_prop:
-        return domain_prop[0].get("plain_text", "").replace("www.", "")
+        domain = domain_prop[0].get("plain_text", "").replace("www.", "")
+        # Try to resolve if it looks like a domain
+        if domain and "." in domain:
+            resolved = resolve_final_domain(f"https://{domain}")
+            if resolved:
+                return resolved
+        return domain
     
     return None
 

@@ -7,7 +7,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-VERSION = "v15"  # Update this with each deployment
+VERSION = "v18"  # Update this with each deployment
 
 app = FastAPI(title="Plinian Allocator Service")
 
@@ -212,6 +212,100 @@ async def debug_enrich(name: str, domain: str = None):
             non_null = {k: v for k, v in llm_output.items() if v is not None and v != [] and v != ""}
             result["llm_fields_populated"] = len(non_null)
             result["llm_populated_fields"] = list(non_null.keys())
+    except Exception as e:
+        result["errors"].append(f"LLM error: {e}")
+    
+    return result
+
+
+@app.get("/debug-batch-flow")
+async def debug_batch_flow(page_id: str):
+    """
+    Debug endpoint: Show exactly what the batch job sees for a specific Notion page.
+    This mirrors the EXACT data flow of run_allocator() but without writing.
+    
+    Usage: /debug-batch-flow?page_id=YOUR_NOTION_PAGE_ID
+    """
+    from .web_search import enrich_allocator_with_search
+    from .web_collect import collect_web_text
+    from .llm_jobs import call_enrich_allocator_profile
+    from .notion_client import get_allocator_record
+    from .allocator_pipeline import extract_domain
+    
+    result = {
+        "page_id": page_id,
+        "notion_data": None,
+        "extracted_name": None,
+        "extracted_domain": None,
+        "search_results": None,
+        "scraped_text_lengths": None,
+        "llm_output": None,
+        "errors": []
+    }
+    
+    try:
+        # Get the actual Notion page (exactly like batch does)
+        page = get_allocator_record(page_id)
+        
+        # Extract name (exactly like batch does)
+        props = page.get("properties", {})
+        name_prop = props.get("Name", {}).get("title", [])
+        name = name_prop[0]["plain_text"] if name_prop else "Unknown"
+        
+        result["extracted_name"] = name
+        result["notion_data"] = {
+            "has_main_website": bool(props.get("Main Website", {}).get("url")),
+            "main_website": props.get("Main Website", {}).get("url"),
+            "has_domain": bool(props.get("Domain", {}).get("rich_text")),
+        }
+        
+        # Extract domain (exactly like batch does)
+        domain = extract_domain(page)
+        result["extracted_domain"] = domain
+        
+    except Exception as e:
+        result["errors"].append(f"Notion fetch error: {e}")
+        return result
+    
+    try:
+        # Web search (exactly like batch does)
+        search_results = enrich_allocator_with_search(name, domain)
+        result["search_results"] = {
+            "investments_url": search_results.get("investments_url"),
+            "annual_report_url": search_results.get("annual_report_url"),
+            "pdf_urls": search_results.get("pdf_urls", [])[:5],
+            "snippet_count": len(search_results.get("search_snippets", [])),
+        }
+    except Exception as e:
+        result["errors"].append(f"Search error: {e}")
+        search_results = {}
+    
+    try:
+        # Web collect (exactly like batch does - passes full page!)
+        texts = collect_web_text(page, discovered_urls=search_results)
+        
+        # Add search snippets (exactly like batch does)
+        if search_results.get("search_snippets"):
+            texts["search_context"] = "\n\n".join(search_results["search_snippets"])
+        
+        result["scraped_text_lengths"] = {
+            "about_text": len(texts.get("about_text", "")),
+            "policy_text": len(texts.get("policy_text", "")),
+            "report_text": len(texts.get("report_text", "")),
+            "search_context": len(texts.get("search_context", "")),
+        }
+        result["report_preview"] = texts.get("report_text", "")[:2000]
+        
+    except Exception as e:
+        result["errors"].append(f"Scrape error: {e}")
+        texts = {}
+    
+    try:
+        # LLM call (exactly like batch does)
+        if texts:
+            llm_output = call_enrich_allocator_profile(name, {}, texts)
+            result["llm_output"] = llm_output
+            result["research_notes_preview"] = llm_output.get("research_notes", "")[:1000]
     except Exception as e:
         result["errors"].append(f"LLM error: {e}")
     
