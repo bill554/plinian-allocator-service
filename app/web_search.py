@@ -124,7 +124,12 @@ def find_investment_pages(allocator_name: str, domain: str = None) -> dict:
         
         # Collect relevant snippets for LLM context
         if any(kw in snippet_lower for kw in ["billion", "million", "asset", "allocation", "portfolio", "aum", "cio", "investment", "committed", "private equity", "real estate", "hedge", "consultant"]):
-            result["search_snippets"].append(snippet)
+            # Add date context if available from search result
+            date_str = r.get("date", "")
+            if date_str:
+                result["search_snippets"].append(f"[{date_str}] {snippet}")
+            else:
+                result["search_snippets"].append(snippet)
         
         # Categorize URL by type (non-PDFs)
         if not url_lower.endswith(".pdf"):
@@ -180,6 +185,8 @@ def enrich_allocator_with_search(allocator_name: str, domain: str = None) -> dic
         results = search_google(query, num_results=5)
         for r in results:
             snippet = r.get("snippet", "")
+            date_str = r.get("date", "")  # Serper often returns date like "3 days ago", "Jan 15, 2024", etc.
+            
             if snippet and len(snippet) > 50:
                 # Check for high-value content
                 if any(kw in snippet.lower() for kw in [
@@ -189,7 +196,14 @@ def enrich_allocator_with_search(allocator_name: str, domain: str = None) -> dic
                     "co-invest", "coinvest", "direct investment"
                 ]):
                     if snippet not in pages["search_snippets"]:
-                        pages["search_snippets"].append(snippet)
+                        # Add date context if available
+                        if date_str:
+                            pages["search_snippets"].append(f"[{date_str}] {snippet}")
+                        else:
+                            pages["search_snippets"].append(snippet)
+    
+    # Sort snippets to prioritize recent ones
+    pages["search_snippets"] = sort_snippets_by_recency(pages["search_snippets"])
     
     # Keep more snippets - they contain the best data
     pages["search_snippets"] = pages["search_snippets"][:20]
@@ -197,3 +211,55 @@ def enrich_allocator_with_search(allocator_name: str, domain: str = None) -> dic
     logger.info(f"Total search snippets for {allocator_name}: {len(pages['search_snippets'])}")
     
     return pages
+
+
+def sort_snippets_by_recency(snippets: list) -> list:
+    """
+    Sort snippets to prioritize recent ones.
+    Snippets with recent dates come first, old dates go to the end,
+    and snippets without dates stay in the middle.
+    """
+    from datetime import datetime
+    import re
+    
+    def extract_year(snippet: str) -> tuple:
+        """
+        Returns (priority, snippet) where priority is:
+        0 = recent (2024-2025)
+        1 = no date detected
+        2 = old (before 2024)
+        """
+        # Check for bracketed date at start like "[Jan 15, 2025]"
+        bracket_match = re.match(r'\[([^\]]+)\]', snippet)
+        if bracket_match:
+            date_str = bracket_match.group(1).lower()
+            
+            # Check for relative dates (recent)
+            if any(x in date_str for x in ['day', 'hour', 'minute', 'week', 'month ago']):
+                return (0, snippet)  # Recent
+            
+            # Check for year
+            year_match = re.search(r'20(\d{2})', date_str)
+            if year_match:
+                year = int('20' + year_match.group(1))
+                if year >= 2024:
+                    return (0, snippet)  # Recent
+                else:
+                    return (2, snippet)  # Old
+        
+        # Check for years in the snippet itself
+        years_in_text = re.findall(r'\b20(\d{2})\b', snippet)
+        if years_in_text:
+            # Get the most recent year mentioned
+            max_year = max(int('20' + y) for y in years_in_text)
+            if max_year >= 2024:
+                return (0, snippet)
+            elif max_year <= 2020:
+                return (2, snippet)  # Old data - deprioritize
+        
+        # No date detected
+        return (1, snippet)
+    
+    # Sort by priority
+    sorted_snippets = sorted(snippets, key=lambda s: extract_year(s)[0])
+    return sorted_snippets

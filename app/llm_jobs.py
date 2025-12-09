@@ -28,12 +28,23 @@ SPECIFICALLY FORBIDDEN:
 - Do NOT mention any percentage unless it appears in the source text
 - Do NOT use information from other allocators - each is completely separate
 
+##############################################################################
+# DATE AWARENESS - PREFER RECENT INFORMATION
+##############################################################################
+
+Some snippets include dates like "[Jan 15, 2025]" or "[2 months ago]".
+- STRONGLY PREFER information from 2024-2025
+- BE SKEPTICAL of information from 2020 or earlier - staff may have changed
+- For CIO/staff names, ONLY use if from a recent source (2023+) or official website
+- If you see conflicting info, prefer the more recent source
+- If the only CIO reference is from before 2022, say "CIO not confirmed in recent sources"
+
+##############################################################################
+
 IF THE SOURCE TEXT IS SPARSE OR EMPTY:
 - Return mostly null values
 - State "CIO not identified in provided source text" in research_notes
 - This is the CORRECT behavior - do not try to be "helpful" by guessing
-
-##############################################################################
 
 YOUR TASK:
 Extract ONLY what appears in the source text into this JSON schema:

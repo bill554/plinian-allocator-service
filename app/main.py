@@ -7,7 +7,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-VERSION = "v18"  # Update this with each deployment
+VERSION = "v19"  # Update this with each deployment
 
 app = FastAPI(title="Plinian Allocator Service")
 
