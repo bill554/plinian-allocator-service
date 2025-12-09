@@ -7,12 +7,14 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+VERSION = "v15"  # Update this with each deployment
+
 app = FastAPI(title="Plinian Allocator Service")
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "env": SETTINGS.env}
+    return {"status": "ok", "env": SETTINGS.env, "version": VERSION}
 
 
 @app.post("/jobs/run-nightly-allocator-research")
