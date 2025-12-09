@@ -9,6 +9,7 @@ class Settings:
     contacts_db_id: str = os.getenv("CONTACTS_DB_ID", "")
     snapshots_db_id: str = os.getenv("SNAPSHOTS_DB_ID", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     clay_api_key: str = os.getenv("CLAY_API_KEY", "")
     search_api_key: str = os.getenv("SEARCH_API_KEY", "")
     env: str = os.getenv("ENV", "prod")
