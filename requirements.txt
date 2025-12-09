@@ -7,3 +7,4 @@ beautifulsoup4
 trafilatura
 python-dotenv
 pypdf
+pdfplumber>=0.10.0

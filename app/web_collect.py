@@ -7,21 +7,34 @@ Scrapes allocator websites to extract relevant text from:
 - Policy documents and RFPs
 - Annual reports, CAFRs, and board materials
 
-Supports both HTML and PDF extraction.
+Supports both HTML and PDF extraction with intelligent page targeting.
 """
 
 import re
+import logging
 from io import BytesIO
 from urllib.parse import urljoin
 
 import httpx
 import trafilatura
+
+logger = logging.getLogger(__name__)
+
+# Try pdfplumber first (better for tables), fall back to pypdf
+try:
+    import pdfplumber
+    PDF_EXTRACTOR = "pdfplumber"
+except ImportError:
+    pdfplumber = None
+    PDF_EXTRACTOR = "pypdf"
+
 from pypdf import PdfReader
 
 
-DEFAULT_TIMEOUT = 12  # seconds
-MAX_TEXT_CHARS = 12000  # per bucket - increased for more comprehensive data
-MAX_URLS_PER_BUCKET = 10  # rate limiting - increased slightly
+DEFAULT_TIMEOUT = 20  # increased for large PDFs
+MAX_TEXT_CHARS = 25000  # per bucket - increased significantly for PDFs
+MAX_URLS_PER_BUCKET = 10
+MAX_PDF_SIZE_MB = 50  # skip PDFs larger than this
 
 
 # ----- 1. Helper: safe HTTP fetch ----- #
@@ -36,19 +49,30 @@ def safe_get(url: str) -> tuple:
 
     try:
         with httpx.Client(follow_redirects=True, timeout=DEFAULT_TIMEOUT) as client:
+            # First do a HEAD request to check size for PDFs
+            if url.lower().endswith(".pdf"):
+                try:
+                    head = client.head(url)
+                    content_length = int(head.headers.get("content-length", 0))
+                    if content_length > MAX_PDF_SIZE_MB * 1024 * 1024:
+                        logger.warning(f"PDF too large ({content_length / 1024 / 1024:.1f}MB): {url}")
+                        return "", ""
+                except Exception:
+                    pass  # Continue anyway if HEAD fails
+            
             resp = client.get(url)
         if resp.status_code != 200:
             return "", ""
 
         content_type = resp.headers.get("content-type", "").lower()
-        # For PDFs, we need resp.content (bytes); for HTML, resp.text
         is_pdf = "pdf" in content_type or url.lower().endswith(".pdf")
         return content_type, resp.content if is_pdf else resp.text
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to fetch {url}: {e}")
         return "", ""
 
 
-# ----- 2. Helper: extract text from HTML or PDF ----- #
+# ----- 2. Helper: extract text from HTML ----- #
 
 def extract_text_from_html(html: str) -> str:
     """Extract clean text from HTML using trafilatura."""
@@ -61,26 +85,314 @@ def extract_text_from_html(html: str) -> str:
         return ""
 
 
-def extract_text_from_pdf(data: bytes) -> str:
-    """Extract text from PDF bytes using pypdf."""
+# ----- 3. CAFR/PDF Section Detection ----- #
+
+# Keywords that indicate high-value pages in CAFRs/annual reports
+INVESTMENT_SECTION_MARKERS = [
+    "investment section",
+    "report from the chief investment officer",
+    "chief investment officer",
+    "report of the cio",
+    "investment report",
+    "investment overview",
+    "asset allocation",
+    "investment policy",
+    "investment consultant",
+    "investment performance",
+]
+
+HIGH_VALUE_KEYWORDS = [
+    "asset allocation", "asset class", "target allocation", "actual allocation",
+    "private equity", "private markets", "real estate", "real assets",
+    "hedge fund", "absolute return", "fixed income", "public equity",
+    "investment policy", "investment strategy", "investment philosophy",
+    "chief investment officer", "cio", "investment staff", "investment team",
+    "consultant", "verus", "nepc", "callan", "mercer", "cambridge",
+    "commitment", "committed", "co-invest", "coinvest", "direct investment",
+    "manager", "fund commitment", "private credit", "infrastructure",
+    "emerging manager", "diverse manager", "risk parity", "commodities",
+    "performance", "benchmark", "return", "allocation percentage",
+    "board of trustees", "executive director", "fiduciary"
+]
+
+
+def _score_page_relevance(text: str) -> int:
+    """Score a page's relevance based on investment keywords."""
+    if not text:
+        return 0
+    text_lower = text.lower()
+    score = 0
+    
+    # High score for investment section markers
+    for marker in INVESTMENT_SECTION_MARKERS:
+        if marker in text_lower:
+            score += 5
+    
+    # Regular score for other keywords
+    for kw in HIGH_VALUE_KEYWORDS:
+        if kw in text_lower:
+            score += 1
+    
+    return score
+
+
+def _find_investment_section_pages(pdf, total_pages: int) -> tuple[int, int]:
+    """
+    Scan PDF to find the Investment Section page range.
+    Returns (start_page, end_page) or (None, None) if not found.
+    
+    CAFRs typically have a Table of Contents in first 5-10 pages that lists:
+    - Introductory Section
+    - Financial Section  
+    - Investment Section (THIS IS WHAT WE WANT)
+    - Actuarial Section
+    - Statistical Section
+    """
+    investment_start = None
+    investment_end = None
+    
+    # First, scan early pages for TOC to find Investment Section page number
+    toc_pages = min(15, total_pages)
+    
+    for i in range(toc_pages):
+        try:
+            if hasattr(pdf, 'pages'):  # pdfplumber
+                text = pdf.pages[i].extract_text() or ""
+            else:  # pypdf
+                text = pdf.pages[i].extract_text() or ""
+            
+            text_lower = text.lower()
+            
+            # Look for TOC entry like "Investment Section...45" or "Investment Section 45"
+            # Common patterns in CAFRs
+            import re
+            
+            # Pattern: "investment section" followed by page number
+            patterns = [
+                r'investment\s+section[.\s]*(\d+)',
+                r'report.*chief investment officer[.\s]*(\d+)',
+                r'cio\s+report[.\s]*(\d+)',
+                r'investment\s+overview[.\s]*(\d+)',
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, text_lower)
+                if match:
+                    try:
+                        page_num = int(match.group(1))
+                        # PDF pages are often offset by cover pages
+                        # Try the exact number and nearby pages
+                        investment_start = max(0, page_num - 3)
+                        logger.info(f"Found Investment Section reference at TOC, targeting page ~{page_num}")
+                        break
+                    except:
+                        pass
+            
+            if investment_start:
+                break
+                
+        except Exception as e:
+            logger.debug(f"Error scanning page {i} for TOC: {e}")
+            continue
+    
+    # If we found a start from TOC, estimate the section is ~30-40 pages
+    if investment_start:
+        investment_end = min(investment_start + 40, total_pages)
+        return investment_start, investment_end
+    
+    # Fallback: scan for section header directly
+    # Investment Section usually starts around page 40-80 in most CAFRs
+    scan_start = min(30, total_pages)
+    scan_end = min(120, total_pages)
+    
+    for i in range(scan_start, scan_end):
+        try:
+            if hasattr(pdf, 'pages'):
+                text = pdf.pages[i].extract_text() or ""
+            else:
+                text = pdf.pages[i].extract_text() or ""
+            
+            text_lower = text.lower()
+            
+            # Look for section header
+            if any(marker in text_lower for marker in [
+                "investment section",
+                "report from the chief investment officer", 
+                "report of the chief investment officer",
+                "chief investment officer's report"
+            ]):
+                investment_start = i
+                investment_end = min(i + 40, total_pages)
+                logger.info(f"Found Investment Section header at page {i}")
+                return investment_start, investment_end
+                
+        except Exception as e:
+            continue
+    
+    logger.info("Could not locate Investment Section, will use smart sampling")
+    return None, None
+
+
+def extract_text_from_pdf_pdfplumber(data: bytes, max_pages: int = 100) -> str:
+    """
+    Extract text from PDF using pdfplumber (better for tables).
+    Specifically targets CAFR structure:
+    1. First 15 pages (intro, exec summary, board/staff list)
+    2. Investment Section (found via TOC or header scan)
+    3. Any other high-value pages
+    """
+    if not data or not pdfplumber:
+        return ""
+    
+    try:
+        pdf = pdfplumber.open(BytesIO(data))
+    except Exception as e:
+        logger.debug(f"pdfplumber failed to open PDF: {e}")
+        return ""
+    
+    total_pages = len(pdf.pages)
+    logger.info(f"PDF has {total_pages} pages, using pdfplumber with CAFR-aware extraction")
+    
+    pages_to_read = set()
+    
+    # ALWAYS read first 15 pages (intro, letter from ED, board list, staff, TOC)
+    for i in range(min(15, total_pages)):
+        pages_to_read.add(i)
+    
+    # Find Investment Section
+    inv_start, inv_end = _find_investment_section_pages(pdf, total_pages)
+    
+    if inv_start is not None:
+        # Read the entire Investment Section
+        for i in range(inv_start, inv_end):
+            pages_to_read.add(i)
+        logger.info(f"Will read Investment Section pages {inv_start}-{inv_end}")
+    else:
+        # Fallback: sample middle pages where investment content usually lives
+        sample_ranges = [
+            (15, 50, 3),    # Pages 15-50, every 3rd page
+            (50, 100, 2),   # Pages 50-100, every 2nd page (investment section often here)
+            (100, 150, 4),  # Pages 100-150, every 4th page
+        ]
+        
+        for start, end, step in sample_ranges:
+            if start >= total_pages:
+                break
+            actual_end = min(end, total_pages)
+            for i in range(start, actual_end, step):
+                pages_to_read.add(i)
+    
+    # Also read last 5 pages (sometimes has consultant/advisor info)
+    for i in range(max(0, total_pages - 5), total_pages):
+        pages_to_read.add(i)
+    
+    # Sort and limit
+    pages_to_read = sorted(pages_to_read)[:max_pages]
+    logger.info(f"Reading {len(pages_to_read)} pages from PDF")
+    
+    # Extract text, prioritizing high-value pages
+    high_value_texts = []
+    regular_texts = []
+    
+    for i in pages_to_read:
+        try:
+            page = pdf.pages[i]
+            text = page.extract_text() or ""
+            
+            # Also try to extract tables (common in investment sections)
+            try:
+                tables = page.extract_tables()
+                for table in tables:
+                    if table:
+                        for row in table:
+                            if row:
+                                row_text = " | ".join(str(cell) if cell else "" for cell in row)
+                                if row_text.strip():
+                                    text += "\n" + row_text
+            except:
+                pass
+            
+            if text.strip():
+                score = _score_page_relevance(text)
+                if score >= 3:
+                    high_value_texts.append(f"[Page {i+1}]\n{text}")
+                else:
+                    regular_texts.append(text)
+                    
+        except Exception as e:
+            logger.debug(f"Failed to extract page {i}: {e}")
+            continue
+    
+    pdf.close()
+    
+    # Prioritize high-value pages at the front
+    all_texts = high_value_texts + regular_texts
+    result = "\n\n".join(all_texts)
+    
+    logger.info(f"Extracted {len(result)} chars from {len(pages_to_read)} pages ({len(high_value_texts)} high-value pages)")
+    
+    return result
+
+
+def extract_text_from_pdf_pypdf(data: bytes, max_pages: int = 60) -> str:
+    """Extract text from PDF bytes using pypdf (fallback)."""
     if not data:
         return ""
     try:
         reader = PdfReader(BytesIO(data))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"pypdf failed to open PDF: {e}")
         return ""
 
+    total_pages = len(reader.pages)
+    logger.info(f"PDF has {total_pages} pages, using pypdf")
+    
     texts = []
-    # Read only first N pages to keep it manageable
-    max_pages = min(len(reader.pages), 10)
-    for i in range(max_pages):
+    pages_to_read = []
+    
+    if total_pages <= max_pages:
+        pages_to_read = list(range(total_pages))
+    else:
+        # Smart page selection for large PDFs
+        # First 15 pages
+        pages_to_read.extend(range(min(15, total_pages)))
+        # Middle section (investment content)
+        mid_start = max(15, total_pages // 4)
+        mid_end = min(total_pages, 3 * total_pages // 4)
+        step = max(1, (mid_end - mid_start) // 30)
+        for i in range(mid_start, mid_end, step):
+            pages_to_read.append(i)
+        # Last 10 pages
+        for i in range(max(0, total_pages - 10), total_pages):
+            pages_to_read.append(i)
+        
+        pages_to_read = sorted(set(pages_to_read))[:max_pages]
+
+    for i in pages_to_read:
         try:
             page = reader.pages[i]
-            texts.append(page.extract_text() or "")
+            text = page.extract_text() or ""
+            if text.strip():
+                texts.append(text)
         except Exception:
             continue
 
-    return "\n".join(texts)
+    return "\n\n".join(texts)
+
+
+def extract_text_from_pdf(data: bytes) -> str:
+    """Extract text from PDF bytes using best available library."""
+    if not data:
+        return ""
+    
+    # Try pdfplumber first (better for tables)
+    if pdfplumber:
+        result = extract_text_from_pdf_pdfplumber(data)
+        if result:
+            return result
+    
+    # Fall back to pypdf
+    return extract_text_from_pdf_pypdf(data)
 
 
 def extract_text(url: str) -> str:
@@ -93,6 +405,7 @@ def extract_text(url: str) -> str:
         # PDF
         if isinstance(body, str):
             body = body.encode("utf-8", errors="ignore")
+        logger.info(f"Extracting PDF: {url}")
         return extract_text_from_pdf(body)
     else:
         # Assume HTML or text
@@ -102,6 +415,62 @@ def extract_text(url: str) -> str:
             except Exception:
                 return ""
         return extract_text_from_html(body)
+
+
+def find_pdf_links_in_html(html: str, base_url: str) -> list:
+    """
+    Extract PDF links from HTML page.
+    Returns list of absolute PDF URLs.
+    """
+    if not html:
+        return []
+    
+    pdf_urls = []
+    
+    # Find all href attributes pointing to PDFs
+    href_pattern = r'href=["\']([^"\']*\.pdf)["\']'
+    matches = re.findall(href_pattern, html, re.IGNORECASE)
+    
+    for match in matches:
+        # Convert to absolute URL
+        if match.startswith("http"):
+            pdf_urls.append(match)
+        elif match.startswith("/"):
+            pdf_urls.append(urljoin(base_url, match))
+        else:
+            pdf_urls.append(urljoin(base_url + "/", match))
+    
+    # Also look for common patterns in text
+    # e.g., "Download Annual Report (PDF)"
+    return list(set(pdf_urls))
+
+
+def fetch_page_and_find_pdfs(url: str) -> tuple:
+    """
+    Fetch a page and return both its text and any PDF links found.
+    Returns (page_text, [pdf_urls])
+    """
+    content_type, body = safe_get(url)
+    if not content_type or body == "":
+        return "", []
+    
+    if "pdf" in content_type or url.lower().endswith(".pdf"):
+        # It's already a PDF
+        if isinstance(body, str):
+            body = body.encode("utf-8", errors="ignore")
+        return extract_text_from_pdf(body), []
+    
+    # It's HTML - extract text and find PDF links
+    if isinstance(body, bytes):
+        try:
+            body = body.decode("utf-8", errors="ignore")
+        except Exception:
+            return "", []
+    
+    page_text = extract_text_from_html(body)
+    pdf_links = find_pdf_links_in_html(body, url)
+    
+    return page_text, pdf_links
 
 
 # ----- 3. Path sets for allocators ----- #
@@ -296,7 +665,7 @@ def collect_web_text(allocator_page: dict, discovered_urls: dict = None) -> dict
     Args:
         allocator_page: Notion page object with allocator properties
         discovered_urls: Optional dict from web search with discovered URLs:
-            {investments_url, annual_report_url, about_url, team_url}
+            {investments_url, annual_report_url, about_url, team_url, pdf_urls}
         
     Returns:
         {
@@ -319,22 +688,34 @@ def collect_web_text(allocator_page: dict, discovered_urls: dict = None) -> dict
     about_urls = []
     policy_urls = []
     report_urls = []
+    pdf_urls = []  # Collect PDF URLs separately for priority fetching
 
     # Priority 1: Explicit Notion-specified URLs
     if investments_page:
         policy_urls.append(investments_page)
     if latest_report_url:
-        report_urls.append(latest_report_url)
+        if latest_report_url.lower().endswith(".pdf"):
+            pdf_urls.append(latest_report_url)
+        else:
+            report_urls.append(latest_report_url)
     
     # Priority 2: Search-discovered URLs
     if discovered_urls.get("investments_url"):
         policy_urls.append(discovered_urls["investments_url"])
     if discovered_urls.get("annual_report_url"):
-        report_urls.append(discovered_urls["annual_report_url"])
+        url = discovered_urls["annual_report_url"]
+        if url.lower().endswith(".pdf"):
+            pdf_urls.append(url)
+        else:
+            report_urls.append(url)
     if discovered_urls.get("about_url"):
         about_urls.append(discovered_urls["about_url"])
     if discovered_urls.get("team_url"):
         about_urls.append(discovered_urls["team_url"])
+    
+    # Add any PDFs discovered by search
+    if discovered_urls.get("pdf_urls"):
+        pdf_urls.extend(discovered_urls["pdf_urls"])
 
     # Priority 3: Root page as a general "about" source
     if base_url:
@@ -357,25 +738,67 @@ def collect_web_text(allocator_page: dict, discovered_urls: dict = None) -> dict
     about_urls = unique_urls(about_urls)
     policy_urls = unique_urls(policy_urls)
     report_urls = unique_urls(report_urls)
+    pdf_urls = unique_urls(pdf_urls)
 
-    # Fetch & aggregate text (with rate limiting)
+    # Fetch & aggregate text
     about_texts = []
     policy_texts = []
     report_texts = []
 
+    # Fetch about pages
     for url in about_urls[:MAX_URLS_PER_BUCKET]:
         txt = extract_text(url)
         if txt:
             about_texts.append(txt)
 
+    # Fetch policy/investment pages - also look for PDF links
     for url in policy_urls[:MAX_URLS_PER_BUCKET]:
-        txt = extract_text(url)
+        txt, found_pdfs = fetch_page_and_find_pdfs(url)
         if txt:
             policy_texts.append(txt)
+        # Add discovered PDFs to our list
+        for pdf_url in found_pdfs:
+            if pdf_url not in pdf_urls:
+                pdf_urls.append(pdf_url)
 
+    # Fetch report pages - also look for PDF links
     for url in report_urls[:MAX_URLS_PER_BUCKET]:
-        txt = extract_text(url)
+        txt, found_pdfs = fetch_page_and_find_pdfs(url)
         if txt:
+            report_texts.append(txt)
+        # Add discovered PDFs to our list (prioritize annual reports/CAFRs)
+        for pdf_url in found_pdfs:
+            pdf_lower = pdf_url.lower()
+            # Prioritize annual reports, CAFRs, and investment reports
+            if any(kw in pdf_lower for kw in ["annual", "cafr", "investment", "acfr", "report"]):
+                if pdf_url not in pdf_urls:
+                    pdf_urls.insert(0, pdf_url)  # Add to front
+            elif pdf_url not in pdf_urls:
+                pdf_urls.append(pdf_url)
+
+    # Now fetch the most relevant PDFs
+    # Sort PDFs by relevance (annual reports first)
+    def pdf_priority(url):
+        url_lower = url.lower()
+        if "annual" in url_lower and "report" in url_lower:
+            return 0
+        if "cafr" in url_lower or "acfr" in url_lower:
+            return 1
+        if "investment" in url_lower:
+            return 2
+        if "report" in url_lower:
+            return 3
+        return 4
+    
+    pdf_urls = sorted(unique_urls(pdf_urls), key=pdf_priority)
+    
+    # Fetch up to 3 PDFs (they can be large)
+    logger.info(f"Found {len(pdf_urls)} PDF URLs, fetching top 3")
+    for pdf_url in pdf_urls[:3]:
+        logger.info(f"Fetching PDF: {pdf_url}")
+        txt = extract_text(pdf_url)
+        if txt:
+            # PDF content goes to report_texts (highest value)
             report_texts.append(txt)
 
     return {

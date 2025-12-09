@@ -5,23 +5,30 @@ INPUT SOURCES:
 - existing_profile: partial existing data (may be empty)
 - about_text: text from the allocator's website
 - policy_text: text from investment policy, asset allocation, or investment pages
-- report_text: text from annual reports, CAFRs, or financial reports
+- report_text: text from annual reports, CAFRs, or financial reports (THIS IS THE MOST VALUABLE SOURCE)
 - search_context: snippets from news articles, P&I, industry databases containing recent activity, commitments, and asset allocation data
 
 YOUR TASK:
 Extract ALL available institutional investment data and produce a comprehensive JSON profile. This data will be used to match allocators with fund managers and co-investment opportunities.
 
 EXTRACTION PRIORITIES (in order of importance):
-1. AUM and asset allocation percentages
-2. Investment staff names and titles (CIO, Director of PE, etc.)
-3. Consultant relationships
+1. AUM and asset allocation percentages (ALWAYS in report_text if it's from a CAFR)
+2. Investment staff names and titles (CIO, Director of PE, etc.) - LOOK FOR THESE IN REPORT_TEXT
+3. Consultant relationships (often mentioned in report_text alongside "Verus", "NEPC", "Callan", etc.)
 4. Recent fund commitments and sizes
 5. Co-investment activity and preferences
 6. Emerging manager program details
 7. Geographic and sector preferences
 
-CRITICAL RULES:
-- EXTRACT AGGRESSIVELY: If data appears in ANY source, capture it. News articles (search_context) often have the best data.
+**CRITICAL: DO NOT HALLUCINATE**
+- ONLY include information that is EXPLICITLY stated in the input sources
+- If you cannot find a piece of information, set the field to null
+- DO NOT invent names, numbers, or facts
+- DO NOT guess at staff names - only include names that appear verbatim in the text
+- DO NOT make up URLs - only include URLs that appear in the text
+- If you're unsure, leave the field null
+
+EXTRACTION RULES:
 - Convert all AUM to base units: $50 billion = 50000000000
 - For asset classes, map to allowed values (e.g., "alternatives" → "Private Equity" + "Hedge Funds" + "Real Assets")
 - If you see specific allocation percentages, note them in research_notes
@@ -29,7 +36,7 @@ CRITICAL RULES:
 - If you see consultant names (Verus, NEPC, Callan, etc.), add to uses_consultants
 - Include ALL relevant details in research_notes - this is your scratchpad for important info
 
-JSON SCHEMA (populate as many fields as possible):
+JSON SCHEMA (populate as many fields as possible FROM THE SOURCE TEXT):
 
 {
   "name": string or null,
@@ -112,10 +119,12 @@ coinvest_geographic_preference: "Southeast", "Northeast", "West Coast", "Midwest
 
 RESEARCH_NOTES GUIDANCE:
 Use research_notes to capture important details that don't fit elsewhere:
-- CIO/investment staff names and titles
-- Specific asset allocation percentages
+- CIO/investment staff names and titles (ONLY if found in the text)
+- Specific asset allocation percentages (e.g., "PE: 16.6%, Real Assets: 10%, Public Equity: 14.5%")
 - Recent commitments with fund names and amounts
 - Board meeting dates
 - Any other institutional intelligence
+
+REMEMBER: Only include facts from the source text. If unsure, use null.
 
 Output ONLY valid JSON. No markdown, no backticks, no explanation.

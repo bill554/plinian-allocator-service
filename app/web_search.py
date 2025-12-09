@@ -44,6 +44,7 @@ def find_investment_pages(allocator_name: str, domain: str = None) -> dict:
         "annual_report_url": str or None,
         "about_url": str or None,
         "team_url": str or None,
+        "pdf_urls": list of PDF URLs found,
         "search_snippets": list of relevant snippets
     }
     """
@@ -52,14 +53,16 @@ def find_investment_pages(allocator_name: str, domain: str = None) -> dict:
         "annual_report_url": None,
         "about_url": None,
         "team_url": None,
+        "pdf_urls": [],
         "search_snippets": []
     }
     
-    # Build search queries
+    # Build search queries - include PDF-specific searches
     queries = [
         f'"{allocator_name}" investments asset allocation',
         f'"{allocator_name}" annual report CAFR',
         f'"{allocator_name}" investment office CIO team',
+        f'"{allocator_name}" annual report filetype:pdf',  # Direct PDF search
     ]
     
     # If we have a domain, add site-specific searches
@@ -67,11 +70,11 @@ def find_investment_pages(allocator_name: str, domain: str = None) -> dict:
         queries.extend([
             f'site:{domain} investments',
             f'site:{domain} annual report',
-            f'site:{domain} asset allocation',
+            f'site:{domain} filetype:pdf',  # PDFs on the domain
         ])
     
     all_results = []
-    for query in queries[:4]:  # Limit to 4 queries to save API calls
+    for query in queries[:6]:  # Allow more queries
         results = search_google(query, num_results=5)
         all_results.extend(results)
         logger.info(f"Search '{query}' returned {len(results)} results")
@@ -87,41 +90,48 @@ def find_investment_pages(allocator_name: str, domain: str = None) -> dict:
     
     # Categorize results
     for r in unique_results:
-        url = r.get("link", "").lower()
+        url = r.get("link", "")
+        url_lower = url.lower()
         title = r.get("title", "").lower()
         snippet = r.get("snippet", "")
+        
+        # Check if it's a PDF - add to pdf_urls
+        if url_lower.endswith(".pdf"):
+            result["pdf_urls"].append(url)
+            logger.info(f"Found PDF URL: {url}")
         
         # Collect relevant snippets for LLM context
         if any(kw in snippet.lower() for kw in ["billion", "million", "asset", "allocation", "portfolio", "aum", "cio", "investment", "committed", "private equity", "real estate", "hedge", "consultant"]):
             result["search_snippets"].append(snippet)
         
-        # Categorize URL by type
-        if not result["investments_url"]:
-            if any(kw in url for kw in ["investment", "portfolio", "asset-allocation", "assets"]):
-                result["investments_url"] = r.get("link")
-            elif any(kw in title for kw in ["investment", "portfolio", "asset allocation"]):
-                result["investments_url"] = r.get("link")
-        
-        if not result["annual_report_url"]:
-            if any(kw in url for kw in ["annual-report", "annualreport", "cafr", "financial-report"]):
-                result["annual_report_url"] = r.get("link")
-            elif any(kw in title for kw in ["annual report", "cafr", "financial report"]):
-                result["annual_report_url"] = r.get("link")
-        
-        if not result["about_url"]:
-            if any(kw in url for kw in ["about", "who-we-are", "our-story", "overview"]):
-                result["about_url"] = r.get("link")
-        
-        if not result["team_url"]:
-            if any(kw in url for kw in ["team", "staff", "leadership", "people", "board"]):
-                result["team_url"] = r.get("link")
-            elif any(kw in title for kw in ["team", "staff", "leadership", "board of trustees"]):
-                result["team_url"] = r.get("link")
+        # Categorize URL by type (non-PDFs)
+        if not url_lower.endswith(".pdf"):
+            if not result["investments_url"]:
+                if any(kw in url_lower for kw in ["investment", "portfolio", "asset-allocation", "assets"]):
+                    result["investments_url"] = url
+                elif any(kw in title for kw in ["investment", "portfolio", "asset allocation"]):
+                    result["investments_url"] = url
+            
+            if not result["annual_report_url"]:
+                if any(kw in url_lower for kw in ["annual-report", "annualreport", "cafr", "financial-report"]):
+                    result["annual_report_url"] = url
+                elif any(kw in title for kw in ["annual report", "cafr", "financial report"]):
+                    result["annual_report_url"] = url
+            
+            if not result["about_url"]:
+                if any(kw in url_lower for kw in ["about", "who-we-are", "our-story", "overview"]):
+                    result["about_url"] = url
+            
+            if not result["team_url"]:
+                if any(kw in url_lower for kw in ["team", "staff", "leadership", "people", "board"]):
+                    result["team_url"] = url
+                elif any(kw in title for kw in ["team", "staff", "leadership", "board of trustees"]):
+                    result["team_url"] = url
     
     # Limit snippets
     result["search_snippets"] = result["search_snippets"][:10]
     
-    logger.info(f"Found URLs for {allocator_name}: investments={result['investments_url']}, report={result['annual_report_url']}")
+    logger.info(f"Found URLs for {allocator_name}: investments={result['investments_url']}, report={result['annual_report_url']}, pdfs={len(result['pdf_urls'])}")
     
     return result
 

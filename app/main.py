@@ -151,6 +151,7 @@ async def debug_enrich(name: str, domain: str = None):
         "search_results": None,
         "scraped_text_lengths": None,
         "search_snippets": None,
+        "pdf_urls_found": None,
         "llm_output": None,
         "errors": []
     }
@@ -165,6 +166,7 @@ async def debug_enrich(name: str, domain: str = None):
             "team_url": search_results.get("team_url"),
         }
         result["search_snippets"] = search_results.get("search_snippets", [])
+        result["pdf_urls_found"] = search_results.get("pdf_urls", [])
     except Exception as e:
         result["errors"].append(f"Search error: {e}")
         search_results = {}
@@ -191,7 +193,7 @@ async def debug_enrich(name: str, domain: str = None):
         result["text_previews"] = {
             "about": texts.get("about_text", "")[:500],
             "policy": texts.get("policy_text", "")[:500],
-            "report": texts.get("report_text", "")[:500],
+            "report": texts.get("report_text", "")[:2000],  # More preview for PDFs
             "search": texts.get("search_context", "")[:1000],
         }
     except Exception as e:
